@@ -49,6 +49,7 @@ const depositSchema = new mongoose.Schema({
   status: { type: String, default: 'pending' },
   createdAt: { type: Date, default: Date.now }
 });
+// Niche wali line waise hi rahegi: const Deposit = mongoose.model('Deposit', depositSchema);
 const Deposit = mongoose.model('Deposit', depositSchema);
 
 const withdrawSchema = new mongoose.Schema({
@@ -240,7 +241,15 @@ app.get('/api/admin/deposits', verifyAdmin, async (req, res) => {
 
 app.post('/api/admin/deposit-action', verifyAdmin, async (req, res) => {
   const { depositId, action } = req.body;
-  const deposit = await Deposit.findById(depositId);
+  
+  // ID string ya number ho sakti hai, usko flexible banao
+  let deposit = await Deposit.findById(depositId).catch(() => null);
+  
+  // Agar ID se na mile, toh check karo ki kya woh purana format (Date.now) hai
+  if (!deposit) {
+    deposit = await Deposit.findOne({ id: depositId });
+  }
+
   if (deposit && deposit.status === 'pending') {
     deposit.status = action === 'approve' ? 'approved' : 'rejected';
     await deposit.save();
@@ -254,7 +263,7 @@ app.post('/api/admin/deposit-action', verifyAdmin, async (req, res) => {
     }
     res.json({ success: true });
   } else {
-    res.status(400).json({ error: "Invalid request" });
+    res.status(400).json({ error: "Invalid request or deposit already processed" });
   }
 });
 

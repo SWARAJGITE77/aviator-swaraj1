@@ -135,7 +135,11 @@ const verifyAdmin = (req, res, next) => {
 
 const getOrCreateUser = async (userId) => {
   let user = await User.findOne({ userId });
-  if (!user) user = await User.create({ userId, password: "social_login_placeholder", mobile: "0000000000" });
+  if (!user) {
+    // Agar naya user hai aur mobile nahi hai, toh temporary mobile daal do
+    const tempMobile = "9" + Math.floor(100000000 + Math.random() * 900000000); 
+    user = await User.create({ userId, password: "social_login_placeholder", mobile: tempMobile });
+  }
   return user;
 };
 

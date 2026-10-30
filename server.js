@@ -242,31 +242,48 @@ app.get('/api/admin/deposits', verifyAdmin, async (req, res) => {
 app.post('/api/admin/deposit-action', verifyAdmin, async (req, res) => {
   const { depositId, action } = req.body;
   
-  // ID string ya number ho sakti hai, usko flexible banao
-  let deposit = await Deposit.findById(depositId).catch(() => null);
-  
-  // Agar ID se na mile, toh check karo ki kya woh purana format (Date.now) hai
-  if (!deposit) {
-    deposit = await Deposit.findOne({ id: depositId });
-  }
+  try {
+    let deposit = null;
 
-  if (deposit && deposit.status === 'pending') {
+    // 1. Pehle naye MongoDB ID format se dhoondho
+    if (mongoose.Types.ObjectId.isValid(depositId)) {
+      deposit = await Deposit.findById(depositId);
+    }
+
+    // 2. Agar nahi mila, toh purane Date.now() wale format se dhoondho
+    if (!deposit) {
+      deposit = await Deposit.findOne({ id: depositId });
+    }
+
+    if (!deposit) {
+      return res.status(404).json({ error: "Deposit request not found in database." });
+    }
+
+    if (deposit.status !== 'pending') {
+      return res.status(400).json({ error: "This deposit is already " + deposit.status });
+    }
+
+    // Status update karo
     deposit.status = action === 'approve' ? 'approved' : 'rejected';
     await deposit.save();
     
+    // Agar approve kiya hai, toh user ko paisa do
     if (action === 'approve') {
       const user = await getOrCreateUser(deposit.userId);
       user.balance += deposit.amount;
       user.totalDeposited += deposit.amount;
       await user.save();
+      
       io.emit('balanceUpdated', { userId: deposit.userId, newBalance: user.balance });
     }
-    res.json({ success: true });
-  } else {
-    res.status(400).json({ error: "Invalid request or deposit already processed" });
+    
+    res.json({ success: true, msg: "Deposit " + action + "d successfully!" });
+
+  } catch (err) {
+    console.log("Deposit Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 app.get('/api/admin/withdrawals', verifyAdmin, async (req, res) => {
   const withdrawals = await Withdraw.find({ status: 'pending' }).sort({ createdAt: -1 });
   res.json(withdrawals);

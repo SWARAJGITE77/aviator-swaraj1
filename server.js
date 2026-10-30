@@ -6,8 +6,6 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-
-// Temporary Email Blocker import kiya
 const { isTempMail } = require('tempmail-blocker');
 
 const app = express();
@@ -18,7 +16,7 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 // ================= MONGODB CONNECTION =================
-// YAHAN APNA NAYA LINK PASTE KARO
+// YAHAN APNA LINK PASTE KARO
 const MONGO_URI = "mongodb+srv://swarajgite63_db_user:Swaraj12345@aviator-swaraj.mxfhw6b.mongodb.net/"; 
 
 mongoose.connect(MONGO_URI)
@@ -49,7 +47,6 @@ const depositSchema = new mongoose.Schema({
   status: { type: String, default: 'pending' },
   createdAt: { type: Date, default: Date.now }
 });
-// Niche wali line waise hi rahegi: const Deposit = mongoose.model('Deposit', depositSchema);
 const Deposit = mongoose.model('Deposit', depositSchema);
 
 const withdrawSchema = new mongoose.Schema({
@@ -66,28 +63,20 @@ let multiplier = 1.0;
 let crashAt = 0;
 let countdown = 5; 
 
-// ================= AUTH APIS (REGISTER/LOGIN) =================
+// ================= AUTH APIS =================
 
 app.post('/api/auth/register', async (req, res) => {
   const { email, mobile, password } = req.body; 
   if (!email || !mobile || !password) return res.status(400).json({ error: "Email, Mobile and Password are required" });
 
-  // 1. Temporary Email Check
-  if (isTempMail(email)) {
-    return res.status(400).json({ error: "Temporary email addresses are not allowed. Please use a real email." });
-  }
+  if (isTempMail(email)) return res.status(400).json({ error: "Temporary email addresses are not allowed." });
 
-  // 2. India Mobile Number Validation
   const indianMobileRegex = /^[6-9]\d{9}$/;
-  if (!indianMobileRegex.test(mobile)) {
-    return res.status(400).json({ error: "Please enter a valid 10-digit Indian mobile number." });
-  }
+  if (!indianMobileRegex.test(mobile)) return res.status(400).json({ error: "Please enter a valid 10-digit Indian mobile number." });
 
-  // 3. Check Email Exists
   let existingEmail = await User.findOne({ userId: email });
   if (existingEmail) return res.status(400).json({ error: "Email already registered" });
 
-  // 4. Check Mobile Exists
   let existingMobile = await User.findOne({ mobile: mobile });
   if (existingMobile) return res.status(400).json({ error: "Mobile number already registered" });
 
@@ -127,7 +116,7 @@ app.post('/api/admin/login', (req, res) => {
 const verifyAdmin = (req, res, next) => {
   const token = req.headers['authorization'];
   if (!token || !validAdminTokens.includes(token)) {
-    return res.status(403).json({ error: "Unauthorized Access!" });
+    return res.status(403).json({ error: "Unauthorized Access! Please login again." });
   }
   next();
 };
@@ -137,9 +126,11 @@ const verifyAdmin = (req, res, next) => {
 const getOrCreateUser = async (userId) => {
   let user = await User.findOne({ userId });
   if (!user) {
-    // Agar naya user hai aur mobile nahi hai, toh temporary mobile daal do
     const tempMobile = "9" + Math.floor(100000000 + Math.random() * 900000000); 
     user = await User.create({ userId, password: "social_login_placeholder", mobile: tempMobile });
+  } else if (!user.mobile) {
+    user.mobile = "9" + Math.floor(100000000 + Math.random() * 900000000);
+    await user.save();
   }
   return user;
 };
@@ -239,60 +230,62 @@ app.get('/api/admin/deposits', verifyAdmin, async (req, res) => {
   res.json(deposits);
 });
 
+// FIXED: Deposit Approval Logic
 app.post('/api/admin/deposit-action', verifyAdmin, async (req, res) => {
   const { depositId, action } = req.body;
   
   try {
     let deposit = null;
 
-    // 1. Pehle naye MongoDB ID format se dhoondho
     if (mongoose.Types.ObjectId.isValid(depositId)) {
       deposit = await Deposit.findById(depositId);
     }
-
-    // 2. Agar nahi mila, toh purane Date.now() wale format se dhoondho
     if (!deposit) {
-      deposit = await Deposit.findOne({ id: depositId });
+      deposit = await Deposit.findOne({ _id: depositId });
     }
 
-    if (!deposit) {
-      return res.status(404).json({ error: "Deposit request not found in database." });
-    }
+    if (!deposit) return res.status(404).json({ error: "Deposit request not found." });
+    if (deposit.status !== 'pending') return res.status(400).json({ error: "Deposit already processed." });
 
-    if (deposit.status !== 'pending') {
-      return res.status(400).json({ error: "This deposit is already " + deposit.status });
-    }
-
-    // Status update karo
     deposit.status = action === 'approve' ? 'approved' : 'rejected';
     await deposit.save();
     
-    // Agar approve kiya hai, toh user ko paisa do
     if (action === 'approve') {
       const user = await getOrCreateUser(deposit.userId);
       user.balance += deposit.amount;
       user.totalDeposited += deposit.amount;
       await user.save();
-      
       io.emit('balanceUpdated', { userId: deposit.userId, newBalance: user.balance });
     }
-    
     res.json({ success: true, msg: "Deposit " + action + "d successfully!" });
-
   } catch (err) {
-    console.log("Deposit Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Deposit Action Error:", err);
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 });
+
 app.get('/api/admin/withdrawals', verifyAdmin, async (req, res) => {
   const withdrawals = await Withdraw.find({ status: 'pending' }).sort({ createdAt: -1 });
   res.json(withdrawals);
 });
 
+// FIXED: Withdraw Approval Logic
 app.post('/api/admin/withdraw-action', verifyAdmin, async (req, res) => {
   const { withdrawId, action } = req.body;
-  const w = await Withdraw.findById(withdrawId);
-  if (w && w.status === 'pending') {
+  
+  try {
+    let w = null;
+
+    if (mongoose.Types.ObjectId.isValid(withdrawId)) {
+      w = await Withdraw.findById(withdrawId);
+    }
+    if (!w) {
+      w = await Withdraw.findOne({ _id: withdrawId });
+    }
+
+    if (!w) return res.status(404).json({ error: "Withdraw request not found." });
+    if (w.status !== 'pending') return res.status(400).json({ error: "Withdraw already processed." });
+
     w.status = action === 'approve' ? 'approved' : 'rejected';
     await w.save();
     
@@ -303,9 +296,10 @@ app.post('/api/admin/withdraw-action', verifyAdmin, async (req, res) => {
       await user.save();
       io.emit('balanceUpdated', { userId: w.userId, newBalance: user.balance });
     }
-    res.json({ success: true });
-  } else {
-    res.status(400).json({ error: "Invalid request" });
+    res.json({ success: true, msg: "Withdraw " + action + "d successfully!" });
+  } catch (err) {
+    console.error("Withdraw Action Error:", err);
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 });
 
